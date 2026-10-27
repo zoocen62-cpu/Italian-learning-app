@@ -130,6 +130,61 @@ input {
     color: #453127;
 }
 
+.sentence-speech-controls {
+    margin: 12px 0 18px;
+}
+
+.speech-word-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.speech-word-content {
+    flex: 1 1 140px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.speech-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: fit-content;
+    min-width: 0;
+    height: 26px;
+    min-height: 0;
+    flex: 0 0 auto;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 16px;
+    white-space: nowrap;
+    box-shadow: 0 1px 0 #d9b47e;
+}
+
+.speech-button[aria-pressed="true"] {
+    background: #ffe2b5;
+}
+
+.speech-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.speech-status {
+    font-size: 0.875rem;
+    color: #75472e;
+}
+
+.speech-note {
+    margin: 6px 0 0;
+    color: #796556;
+    font-size: 0.75rem;
+}
+
 @media (max-width: 480px) {
     html {
         padding: 20px 12px;

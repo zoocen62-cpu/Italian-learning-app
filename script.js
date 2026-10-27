@@ -64,6 +64,171 @@ function initializeLearningApp() {
     const wordList = sections[1].querySelector("ul");
     const quizQuestion = quizSection.querySelector("p");
 
+    // 이탈리아어 기기 음성을 우선 사용하고, 없으면 서버의 합성 음성을 재생합니다.
+    const speechSupported = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+    const speech = speechSupported ? window.speechSynthesis : null;
+    let activeSpeech = null;
+    const audioCache = new Map();
+    const sentenceSpeechStatus = createSpeechStatus(sentenceSection);
+    const wordSpeechStatus = createSpeechStatus(sections[1]);
+    const sentenceSpeechControls = document.createElement("div");
+    sentenceSpeechControls.className = "sentence-speech-controls";
+    sentenceSpeechControls.appendChild(createSpeechButton(
+        () => sentenceText.textContent, sentenceSpeechStatus, "sentence", "문장 발음 듣기"
+    ));
+    sentenceSpeechControls.appendChild(sentenceSpeechStatus);
+    const speechNote = document.createElement("p");
+    speechNote.className = "speech-note";
+    speechNote.textContent = "기기 음성이 없으면 AI 합성 음성을 사용합니다.";
+    sentenceSpeechControls.appendChild(speechNote);
+    translationText.after(sentenceSpeechControls);
+
+    function createSpeechStatus(section) {
+        const status = document.createElement("p");
+        status.className = "speech-status";
+        status.setAttribute("role", "status");
+        status.hidden = true;
+        section.appendChild(status);
+        return status;
+    }
+
+    function stopSpeech() {
+        if (!activeSpeech) return;
+        const current = activeSpeech;
+        const { button } = current;
+        activeSpeech = null;
+        button.textContent = "▶ 발음 듣기";
+        button.setAttribute("aria-pressed", "false");
+        current.controller?.abort();
+        if (current.audio) {
+            current.audio.pause();
+            current.audio.removeAttribute("src");
+            current.audio.load();
+        }
+        if (current.url) URL.revokeObjectURL(current.url);
+        if (current.utterance) speech.cancel();
+    }
+
+    async function playServerSpeech(text, button, status, kind) {
+        const current = { button, kind, controller: new AbortController(), audio: new Audio() };
+        activeSpeech = current;
+        button.textContent = "■ 준비 중";
+        button.setAttribute("aria-pressed", "true");
+        const timeout = setTimeout(() => current.controller.abort(), 40_000);
+        try {
+            let blob = audioCache.get(text);
+            if (!blob) {
+                const response = await fetch('/speech', {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text }),
+                    signal: current.controller.signal
+                });
+                if (!response.ok) {
+                    const data = await response.json().catch(() => null);
+                    throw new Error(data?.error || "음성 서버에 연결할 수 없습니다. 로컬 Express 서버 주소에서 접속해 주세요.");
+                }
+                if (!response.headers.get("Content-Type")?.includes("audio/")) {
+                    throw new Error("음성 응답을 받지 못했습니다. 서버를 재시작한 뒤 다시 눌러 주세요.");
+                }
+                blob = await response.blob();
+                if (current !== activeSpeech) return;
+                if (!blob.size) throw new Error("생성된 음성이 비어 있습니다. 다시 눌러 주세요.");
+                if (audioCache.size >= 30) audioCache.delete(audioCache.keys().next().value);
+                audioCache.set(text, blob);
+            }
+            if (current !== activeSpeech) return;
+            current.url = URL.createObjectURL(blob);
+            current.audio.src = current.url;
+            current.audio.onended = () => {
+                if (activeSpeech === current) stopSpeech();
+            };
+            current.audio.onerror = () => {
+                if (activeSpeech !== current) return;
+                stopSpeech();
+                status.textContent = "음성을 재생하지 못했습니다. 다시 눌러 주세요.";
+                status.hidden = false;
+            };
+            button.textContent = "■ 중지";
+            await current.audio.play();
+        } catch (error) {
+            if (current !== activeSpeech) return;
+            stopSpeech();
+            status.textContent = error.name === "NotAllowedError"
+                ? "음성이 준비되었습니다. 발음 듣기를 한 번 더 눌러 주세요."
+                : error.name === "AbortError" ? "음성 준비 시간이 초과되었습니다. 다시 눌러 주세요."
+                    : error instanceof TypeError ? "음성 서버 연결을 확인해 주세요. Express 서버 실행이 필요합니다." : error.message;
+            status.hidden = false;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    function createSpeechButton(getText, status, kind, accessibleLabel) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "speech-button";
+        button.textContent = "▶ 발음 듣기";
+        button.setAttribute("aria-label", accessibleLabel);
+        button.setAttribute("aria-pressed", "false");
+        button.addEventListener("click", () => {
+            if (activeSpeech?.button === button) {
+                stopSpeech();
+                return;
+            }
+            stopSpeech();
+            status.hidden = true;
+            const text = getText().trim();
+            const voices = speech?.getVoices() || [];
+            const italianVoices = voices.filter(voice => /^it(?:[-_]|$)/i.test(voice.lang));
+            const voice = italianVoices.find(voice => /^it[-_]IT$/i.test(voice.lang)) || italianVoices[0];
+            if (!voice) {
+                return playServerSpeech(text, button, status, kind);
+            }
+            const utterance = new window.SpeechSynthesisUtterance(text);
+            utterance.lang = "it-IT";
+            utterance.voice = voice;
+            utterance.rate = 0.9;
+            utterance.pitch = 1;
+            activeSpeech = { utterance, button, kind };
+            button.textContent = "■ 중지";
+            button.setAttribute("aria-pressed", "true");
+            const finish = () => {
+                if (activeSpeech?.utterance !== utterance) return;
+                activeSpeech = null;
+                button.textContent = "▶ 발음 듣기";
+                button.setAttribute("aria-pressed", "false");
+            };
+            utterance.onend = finish;
+            utterance.onerror = event => {
+                if (activeSpeech?.utterance !== utterance) return;
+                finish();
+                if (event.error !== "canceled" && event.error !== "interrupted") {
+                    playServerSpeech(text, button, status, kind);
+                }
+            };
+            try {
+                speech.speak(utterance);
+            } catch {
+                finish();
+                return playServerSpeech(text, button, status, kind);
+            }
+        });
+        return button;
+    }
+
+    if (speechSupported) {
+        // 일부 브라우저는 음성 목록을 비동기로 준비합니다. 재생할 때 최신 목록을 조회합니다.
+        speech.getVoices();
+        speech.addEventListener("voiceschanged", () => {
+            if (speech.getVoices().some(voice => /^it(?:[-_]|$)/i.test(voice.lang))) {
+                sentenceSpeechStatus.hidden = true;
+                wordSpeechStatus.hidden = true;
+            }
+        });
+    }
+    window.addEventListener("pagehide", stopSpeech);
+
     function addNextButton(section, label, onClick) {
         const button = document.createElement("button");
         button.type = "button";
@@ -73,14 +238,21 @@ function initializeLearningApp() {
     }
 
     function showWords() {
+        if (activeSpeech?.kind === "word") stopSpeech();
         wordList.replaceChildren();
         for (let offset = 0; offset < 3; offset++) {
             const [italian, korean] = words[(wordIndex + offset) % words.length];
             const item = document.createElement("li");
+            item.className = "speech-word-item";
+            const content = document.createElement("div");
+            content.className = "speech-word-content";
             const word = document.createElement("span");
             word.lang = "it";
             word.textContent = italian;
-            item.append(word, ` — ${korean}`);
+            content.append(word, ` — ${korean}`);
+            item.append(content, createSpeechButton(
+                () => italian, wordSpeechStatus, "word", `${italian} 발음 듣기`
+            ));
             wordList.appendChild(item);
         }
     }
@@ -129,6 +301,7 @@ function initializeLearningApp() {
                 throw new Error("응답 형식이 올바르지 않습니다. 다시 시도해 주세요.");
             }
             const newWords = data.words.map(word => [word.italian, word.korean]);
+            stopSpeech();
             wordIndex = words.length;
             words.push(...newWords);
             showWords();

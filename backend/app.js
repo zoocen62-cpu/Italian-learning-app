@@ -58,6 +58,34 @@ export function createApp({ client, model = "gpt-4.1-mini", generationLimit = 30
         }
     });
 
+    const speechLimiter = rateLimit({
+        windowMs: 60_000, limit: 30, skipFailedRequests: true,
+        standardHeaders: "draft-8", legacyHeaders: false,
+        message: { error: "발음 요청이 많습니다. 1분 후 다시 눌러 주세요." }
+    });
+    app.post("/speech", speechLimiter, express.json({ limit: "4kb" }), async (req, res) => {
+        res.set("Cache-Control", "no-store");
+        const input = z.object({ text: z.string().trim().min(1).max(500) }).strict().safeParse(req.body);
+        if (!input.success) return res.status(400).json({ error: "발음할 문장 또는 단어를 500자 이내로 입력해 주세요." });
+        if (!client) return res.status(503).json({ error: "서버의 OPENAI_API_KEY 설정을 확인해 주세요." });
+        try {
+            const audio = await client.audio.speech.create({
+                model: "tts-1", voice: "nova", input: input.data.text,
+                response_format: "mp3", speed: 0.9
+            });
+            res.type("audio/mpeg").send(Buffer.from(await audio.arrayBuffer()));
+        } catch (error) {
+            console.error("발음 생성 실패", { status: error.status ?? null, type: error.name });
+            res.status(error.status === 429 ? 429 : 502).json({ error: error.status === 429
+                ? "음성 API 사용 한도 또는 요청 제한을 확인해 주세요."
+                : "발음 생성에 실패했습니다. 잠시 후 다시 눌러 주세요." });
+        }
+    });
+    app.use("/speech", (error, _req, res, _next) => {
+        res.status(error.type === "entity.too.large" ? 413 : 400)
+            .json({ error: "발음 요청 형식 또는 크기를 확인해 주세요." });
+    });
+
     // 프로젝트 전체를 static으로 공개하면 .env와 서버 소스가 노출될 수 있습니다.
     for (const [url, file] of [["/", "index.html"], ["/index.html", "index.html"],
         ["/style.css", "style.css"], ["/script.js", "script.js"]]) {

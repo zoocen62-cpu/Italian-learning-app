@@ -56,3 +56,33 @@ test("요청 제한 시 대기 시간 안내", async () => {
         assert.match((await response.json()).error, /초 후/);
     });
 });
+
+test("발음 API는 MP3만 반환하고 요청 입력을 제한", async () => {
+    let calls = 0;
+    const bytes = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00]);
+    const client = { audio: { speech: { create: async request => {
+        calls++;
+        assert.equal(request.input, "Buongiorno!");
+        assert.equal(request.response_format, "mp3");
+        return { arrayBuffer: async () => bytes };
+    } } } };
+    await withServer({ client }, async base => {
+        const post = text => fetch(`${base}/speech`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text })
+        });
+        const response = await post("Buongiorno!");
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get("content-type"), /audio\/mpeg/);
+        assert.equal(response.headers.get("cache-control"), "no-store");
+        assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+        assert.equal((await post(" ")).status, 400);
+        assert.equal((await post("a".repeat(501))).status, 400);
+        assert.equal(calls, 1);
+    });
+    await withServer({}, async base => {
+        const response = await fetch(`${base}/speech`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "ciao" })
+        });
+        assert.equal(response.status, 503);
+    });
+});
